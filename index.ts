@@ -1,6 +1,9 @@
 import { createCanvas } from "https://deno.land/x/canvas@v1.4.2/mod.ts";
 import emojiRegex from 'npm:emoji-regex';
 import emojiFromText from 'npm:emoji-from-text';
+import { UAParser } from 'npm:ua-parser-js';
+
+
 import { makeHomePage } from "./homePage.ts";
 import { incrementCount } from "./db.ts";
 const port = 8080;
@@ -66,7 +69,12 @@ export async function handler(request: Request): Response {
   incrementCount(emoji);
   // Safari doesn't support SVG fonts, so we need to make a PNG
   const forceSvg = url.search.includes('svg'); // ?svg tacked on the end forces SVG, handy for css cursors
-  if (!forceSvg && request.headers.get("user-agent")?.includes("Safari") && !request.headers.get("user-agent")?.includes("Chrome")) {
+
+  const ua = UAParser(request.headers.get("user-agent") || "");
+  const version = parseInt(ua.browser.version);
+
+  // Safari < 26 doesn't support SVG fonts, so we need to make a PNG
+  if (!forceSvg && ua.browser.name === "Safari" && version < 26) {
     return handlerSafari(request);
   }
 
