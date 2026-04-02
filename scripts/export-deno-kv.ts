@@ -19,7 +19,7 @@ function ensureParentDirectory(path: string): Promise<void> {
 function normalizeOutputPath(path: string): string {
   return path.endsWith(".json") ? path : `${path}.json`;
 }
-
+//
 function getBulkPath(path: string): string {
   if (path.endsWith(".json")) return path.replace(/\.json$/, ".bulk.json");
   return `${path}.bulk.json`;
@@ -96,9 +96,7 @@ const bulkPath = getBulkPath(outputPath);
 const envDatabaseId = `ebc01b38-2be1-4642-8f2d-90cdfa2dee62`;
 const databaseId = envDatabaseId;
 const shouldUseRemote = useRemote || Boolean(databaseId);
-const connectUrl = databaseId
-  ? `https://api.deno.com/databases/${databaseId}/connect`
-  : undefined;
+const connectUrl = databaseId ? `https://api.deno.com/databases/${databaseId}/connect` : undefined;
 
 if (useRemote && !databaseId) {
   throw new Error(
