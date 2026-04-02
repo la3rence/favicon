@@ -66,7 +66,7 @@ Optional custom output path:
 deno run --allow-read --allow-write --allow-env --allow-net --unstable-kv scripts/export-deno-kv.ts migrations/my-export.json
 ```
 
-Export directly from remote Deno KV (Deno Deploy):
+Export directly from remote Deno KV (Deno Deploy) :
 
 ```bash
 DENO_KV_DATABASE_ID=<your_database_id> \
