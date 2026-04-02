@@ -3,15 +3,25 @@ import emojiFromText from "emoji-from-text";
 import { UAParser } from "ua-parser-js";
 
 import { makeHomePage } from "./homePage";
-import { incrementCount, type CloudflareEnv } from "./db";
+import { incrementCount, type CloudflareEnv, type PerfLogContext } from "./db";
 
 const ONE_DAY = 60 * 60 * 24;
 const ONE_WEEK = ONE_DAY * 7;
-const TWEMOJI_BASE_URL =
-  "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72";
+const TWEMOJI_BASE_URL = "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72";
 
 interface WorkerExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
+}
+
+function logPerf(enabled: boolean, payload: Record<string, unknown>) {
+  if (!enabled) return;
+  console.log(
+    JSON.stringify({
+      type: "perf",
+      scope: "request",
+      ...payload,
+    }),
+  );
 }
 
 const aliases = new Map<string, string>([
@@ -36,8 +46,7 @@ function getEmojiFromPathname(pathname: string): string {
   }
   // If there is a word, try to find an emoji in it
   const textMatch = emojiFromText(maybeEmojiPath, true);
-  const maybeEmoji = (textMatch as { match?: { emoji?: { char?: string } } })?.match
-    ?.emoji?.char;
+  const maybeEmoji = (textMatch as { match?: { emoji?: { char?: string } } })?.match?.emoji?.char;
   if (maybeEmoji) {
     return maybeEmoji;
   }
@@ -72,20 +81,37 @@ function makeSvgResponse(emoji: string): Response {
   );
 }
 
-async function makePngResponse(emoji: string): Promise<Response | null> {
+async function makePngResponse(emoji: string, perf: PerfLogContext = {}): Promise<Response | null> {
+  const startedAt = Date.now();
   const codePoint = toTwemojiCodePoint(emoji);
   if (!codePoint) return null;
 
+  const fetchStartedAt = Date.now();
   const twemojiResponse = await fetch(`${TWEMOJI_BASE_URL}/${codePoint}.png`);
+  const fetchMs = Date.now() - fetchStartedAt;
+  logPerf(Boolean(perf.enabled), {
+    stage: "twemoji_fetch",
+    requestId: perf.requestId ?? null,
+    codePoint,
+    status: twemojiResponse.status,
+    fetchMs,
+  });
   if (!twemojiResponse.ok) return null;
 
-  return new Response(twemojiResponse.body, {
+  const response = new Response(twemojiResponse.body, {
     status: 200,
     headers: {
       "content-type": "image/png",
       "cache-control": `public, max-age=${ONE_DAY}, s-maxage=${ONE_WEEK}`,
     },
   });
+
+  logPerf(Boolean(perf.enabled), {
+    stage: "png_response_ready",
+    requestId: perf.requestId ?? null,
+    totalMs: Date.now() - startedAt,
+  });
+  return response;
 }
 
 export default {
@@ -95,28 +121,94 @@ export default {
     ctx: WorkerExecutionContext,
   ): Promise<Response> {
     const url = new URL(request.url);
+    const perfEnabled = url.searchParams.get("perf") === "1" || env.DEBUG_PERF === "1";
+    const perf: PerfLogContext = {
+      enabled: perfEnabled,
+      requestId: request.headers.get("cf-ray") ?? undefined,
+    };
+    const requestStartedAt = Date.now();
+    let response: Response;
+
+    logPerf(perfEnabled, {
+      stage: "request_start",
+      requestId: perf.requestId ?? null,
+      path: url.pathname,
+      method: request.method,
+      userAgent: request.headers.get("user-agent") ?? null,
+    });
+
     if (url.pathname === "/") {
-      return new Response(await makeHomePage(env), {
+      const homeStartedAt = Date.now();
+      const html = await makeHomePage(env, perf);
+      logPerf(perfEnabled, {
+        stage: "home_render",
+        requestId: perf.requestId ?? null,
+        renderMs: Date.now() - homeStartedAt,
+      });
+
+      response = new Response(html, {
         status: 200,
         headers: {
           "content-type": "text/html; charset=UTF-8",
           "cache-control": `public, max-age=${ONE_DAY}, s-maxage=${ONE_DAY}`,
         },
       });
+      logPerf(perfEnabled, {
+        stage: "request_summary",
+        requestId: perf.requestId ?? null,
+        path: url.pathname,
+        status: response.status,
+        totalMs: Date.now() - requestStartedAt,
+      });
+      return response;
     }
 
     const emoji = getEmojiFromPathname(url.pathname);
-    ctx.waitUntil(incrementCount(env, emoji));
+    ctx.waitUntil(incrementCount(env, emoji, perf));
+    logPerf(perfEnabled, {
+      stage: "increment_scheduled",
+      requestId: perf.requestId ?? null,
+      emoji,
+    });
 
     // ?svg tacked on the end forces SVG, handy for CSS cursors.
     const forceSvg = url.searchParams.has("svg");
     if (!forceSvg && isLegacySafari(request.headers.get("user-agent") ?? "")) {
-      const png = await makePngResponse(emoji);
-      if (png) return png;
+      const png = await makePngResponse(emoji, perf);
+      if (png) {
+        response = png;
+        logPerf(perfEnabled, {
+          stage: "request_summary",
+          requestId: perf.requestId ?? null,
+          path: url.pathname,
+          responseType: "png",
+          status: response.status,
+          totalMs: Date.now() - requestStartedAt,
+        });
+        return response;
+      }
       // Fallback to SVG if PNG fetch fails.
-      return makeSvgResponse(emoji);
+      response = makeSvgResponse(emoji);
+      logPerf(perfEnabled, {
+        stage: "request_summary",
+        requestId: perf.requestId ?? null,
+        path: url.pathname,
+        responseType: "svg_fallback",
+        status: response.status,
+        totalMs: Date.now() - requestStartedAt,
+      });
+      return response;
     }
 
-    return makeSvgResponse(emoji);
-  }
+    response = makeSvgResponse(emoji);
+    logPerf(perfEnabled, {
+      stage: "request_summary",
+      requestId: perf.requestId ?? null,
+      path: url.pathname,
+      responseType: "svg",
+      status: response.status,
+      totalMs: Date.now() - requestStartedAt,
+    });
+    return response;
+  },
 };

@@ -1,9 +1,9 @@
-import { getEmojiCounts, type CloudflareEnv } from "./db";
+import { getEmojiCounts, type CloudflareEnv, type PerfLogContext } from "./db";
 
 const goodAssEmojis = ["💩", "🌶", "🔥", "🥰", "🖥", "👓"];
 const formatter = new Intl.NumberFormat("en-US");
-export async function makeHomePage(env: CloudflareEnv) {
-  const { topEmojis, countryEmojis, totalCount } = await getEmojiCounts(env);
+export async function makeHomePage(env: CloudflareEnv, perf: PerfLogContext = {}) {
+  const { topEmojis, countryEmojis, totalCount } = await getEmojiCounts(env, perf);
   return /*html*/ `
         <!DOCTYPE html>
         <html lang="en">
@@ -16,13 +16,15 @@ export async function makeHomePage(env: CloudflareEnv) {
           <h1>I bet you need a quick favicon!!</h1>
           <p>This startup returns an emoji inside an SVG<br>so you can pop that sucker into a favicon.</p>
           <p>Use it like <a href="/💩">/💩</a> or <a href="/poop">/poop</a></p>
-          ${
-    goodAssEmojis.map((emoji) => `
+          ${goodAssEmojis
+            .map(
+              (emoji) => `
             <p><code onClick="copyToClipboard(this)" tabIndex="0">
               &#x3C;link rel=&#x22;icon&#x22; href="https://fav.farm/${emoji}" /&#x3E;
             </code></p>
-          `).join("")
-  }
+          `,
+            )
+            .join("")}
           <br>
           <p>It works by serving up this SVG code: </p>
           <p class="small">
@@ -39,16 +41,24 @@ export async function makeHomePage(env: CloudflareEnv) {
           <small>(since I started counting Oct 3, 2024)</small>
         </p>
           <div class="stats">
-          ${topEmojis.map(([emoji, count]) => `<div class="stat">
+          ${topEmojis
+            .map(
+              ([emoji, count]) => `<div class="stat">
               <a href="/${emoji}"><span>${emoji} ${formatter.format(count)}</span></a>
-            </div>`).join("")}
+            </div>`,
+            )
+            .join("")}
           </div>
           <br>
           <p>Top Country Emojis used <br><small>(you guys are so silly gaming these numbers)</small></p>
           <div class="stats">
-          ${countryEmojis.map(([emoji, count]) => `<div class="stat">
+          ${countryEmojis
+            .map(
+              ([emoji, count]) => `<div class="stat">
               <a href="/${emoji}"><span>${emoji} ${formatter.format(count)}</span></a>
-            </div>`).join("")}
+            </div>`,
+            )
+            .join("")}
           </div>
 
 
