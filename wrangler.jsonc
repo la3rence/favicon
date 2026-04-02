@@ -2,6 +2,8 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "favicon",
   "main": "index.ts",
+  "workers_dev": true,
+  "preview_urls": true,
   "compatibility_date": "2026-03-29",
   "compatibility_flags": ["nodejs_compat"],
   "kv_namespaces": [
