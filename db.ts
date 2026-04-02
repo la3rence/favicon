@@ -1,14 +1,18 @@
 const KEY_PREFIX = "favicon:";
 
+interface StatMetadata {
+  count?: number;
+}
+
 interface KVListResult {
-  keys: Array<{ name: string }>;
+  keys: Array<{ name: string; metadata?: StatMetadata | null }>;
   list_complete: boolean;
   cursor?: string;
 }
 
 interface StatsKVNamespace {
-  get(key: string): Promise<string | null>;
-  put(key: string, value: string): Promise<void>;
+  getWithMetadata(key: string): Promise<{ value: string | null; metadata: StatMetadata | null }>;
+  put(key: string, value: string, options?: { metadata?: StatMetadata }): Promise<void>;
   list(options: { prefix: string; cursor?: string }): Promise<KVListResult>;
 }
 
@@ -45,12 +49,14 @@ export async function incrementCount(
   const startedAt = Date.now();
   const key = getKeyForEmoji(emoji);
   const getStartedAt = Date.now();
-  const currentRaw = await env.FAVICON_STATS.get(key);
+  const currentData = await env.FAVICON_STATS.getWithMetadata(key);
   const getMs = Date.now() - getStartedAt;
-  const current = Number.parseInt(currentRaw ?? "0", 10);
+  const current = Number(currentData.metadata?.count ?? 0);
   const next = Number.isFinite(current) ? current + 1 : 1;
   const putStartedAt = Date.now();
-  await env.FAVICON_STATS.put(key, String(next));
+  await env.FAVICON_STATS.put(key, String(next), {
+    metadata: { count: next },
+  });
   const putMs = Date.now() - putStartedAt;
 
   logPerf(perf.enabled, {
@@ -70,6 +76,7 @@ export async function getEmojiCounts(env: CloudflareEnv, perf: PerfLogContext = 
   let complete = false;
   let pageNumber = 0;
   let keysScanned = 0;
+  let metadataHits = 0;
 
   while (!complete) {
     pageNumber++;
@@ -79,14 +86,13 @@ export async function getEmojiCounts(env: CloudflareEnv, perf: PerfLogContext = 
     cursor = page.cursor;
     complete = page.list_complete;
     keysScanned += page.keys.length;
-
-    const getStartedAt = Date.now();
+    const valuesReadStartedAt = Date.now();
 
     for (const entry of page.keys) {
-      const emoji = entry.name.replace(KEY_PREFIX, "");
-      const value = await env.FAVICON_STATS.get(entry.name);
-      const count = Number.parseInt(value ?? "0", 10);
+      const count = Number(entry.metadata?.count ?? 0);
       if (!Number.isFinite(count) || count <= 0) continue;
+      metadataHits++;
+      const emoji = entry.name.replace(KEY_PREFIX, "");
       emojis.push([emoji, count]);
     }
 
@@ -96,7 +102,8 @@ export async function getEmojiCounts(env: CloudflareEnv, perf: PerfLogContext = 
       page: pageNumber,
       keysInPage: page.keys.length,
       listMs,
-      getValuesMs: Date.now() - getStartedAt,
+      valuesReadMs: Date.now() - valuesReadStartedAt,
+      metadataHits,
       cursor: page.cursor ?? null,
       listComplete: page.list_complete,
     });
@@ -126,6 +133,7 @@ export async function getEmojiCounts(env: CloudflareEnv, perf: PerfLogContext = 
     pages: pageNumber,
     keysScanned,
     emojisCounted: emojis.length,
+    metadataHits,
     totalCount,
     totalMs: Date.now() - startedAt,
   });

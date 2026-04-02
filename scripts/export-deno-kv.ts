@@ -135,6 +135,9 @@ const exportPayload = {
 const bulkPayload = records.map((record) => ({
   key: record.cloudflareKey,
   value: String(record.value),
+  metadata: {
+    count: record.value,
+  },
 }));
 
 await ensureParentDirectory(outputPath);
