@@ -17,6 +17,12 @@
       "dataset": "favicon_requests",
     },
   ],
+  "routes": [
+    {
+      "pattern": "fav.farm",
+      "custom_domain": true,
+    },
+  ],
   "observability": {
     "logs": {
       "enabled": true,
