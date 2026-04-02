@@ -52,7 +52,7 @@ favicon:<emoji>
 
 `incrementCount` currently uses KV read/modify/write (simple mode), so extremely high concurrency can lose increments.
 
-## Deno KV export migration script [delete after migration]
+## Deno KV export migration script [delete after migration ]
 
 To export historical stats from local Deno KV:
 
