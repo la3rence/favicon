@@ -1,7 +1,19 @@
-const KEY_PREFIX = "favicon:";
+const EMOJI_KEY_PREFIX = "favicon:";
+const COUNTRY_KEY_PREFIX = "country:";
+const REFERRER_KEY_PREFIX = "referrer:";
 
 interface StatMetadata {
   count?: number;
+}
+
+interface AnalyticsDataPoint {
+  blobs?: string[];
+  doubles?: number[];
+  indexes?: string[];
+}
+
+interface AnalyticsEngineDataset {
+  writeDataPoint(data: AnalyticsDataPoint): void;
 }
 
 interface KVListResult {
@@ -18,6 +30,7 @@ interface StatsKVNamespace {
 
 export interface CloudflareEnv {
   FAVICON_STATS: StatsKVNamespace;
+  ANALYTICS?: AnalyticsEngineDataset;
   DEBUG_PERF?: string;
 }
 
@@ -37,8 +50,17 @@ function logPerf(enabled: boolean | undefined, payload: Record<string, unknown>)
   );
 }
 
-function getKeyForEmoji(emoji: string): string {
-  return `${KEY_PREFIX}${emoji}`;
+function getKey(prefix: string, value: string): string {
+  return `${prefix}${value}`;
+}
+
+async function incrementCounter(env: CloudflareEnv, key: string) {
+  const currentData = await env.FAVICON_STATS.getWithMetadata(key);
+  const current = Number(currentData.metadata?.count ?? 0);
+  const next = Number.isFinite(current) ? current + 1 : 1;
+  await env.FAVICON_STATS.put(key, String(next), {
+    metadata: { count: next },
+  });
 }
 
 export async function incrementCount(
@@ -47,26 +69,86 @@ export async function incrementCount(
   perf: PerfLogContext = {},
 ): Promise<void> {
   const startedAt = Date.now();
-  const key = getKeyForEmoji(emoji);
-  const getStartedAt = Date.now();
-  const currentData = await env.FAVICON_STATS.getWithMetadata(key);
-  const getMs = Date.now() - getStartedAt;
-  const current = Number(currentData.metadata?.count ?? 0);
-  const next = Number.isFinite(current) ? current + 1 : 1;
-  const putStartedAt = Date.now();
-  await env.FAVICON_STATS.put(key, String(next), {
-    metadata: { count: next },
-  });
-  const putMs = Date.now() - putStartedAt;
+  const key = getKey(EMOJI_KEY_PREFIX, emoji);
+  const updateStartedAt = Date.now();
+  await incrementCounter(env, key);
+  const updateMs = Date.now() - updateStartedAt;
 
   logPerf(perf.enabled, {
     stage: "increment",
     requestId: perf.requestId ?? null,
     key,
-    getMs,
-    putMs,
+    updateMs,
     totalMs: Date.now() - startedAt,
   });
+}
+
+export async function incrementSourceCounts(
+  env: CloudflareEnv,
+  country: string,
+  referrerHost: string,
+  perf: PerfLogContext = {},
+): Promise<void> {
+  const startedAt = Date.now();
+  const countryKey = getKey(COUNTRY_KEY_PREFIX, country);
+  const referrerKey = getKey(REFERRER_KEY_PREFIX, referrerHost);
+  const updateStartedAt = Date.now();
+  await Promise.all([incrementCounter(env, countryKey), incrementCounter(env, referrerKey)]);
+  const updateMs = Date.now() - updateStartedAt;
+
+  logPerf(perf.enabled, {
+    stage: "increment_sources",
+    requestId: perf.requestId ?? null,
+    countryKey,
+    referrerKey,
+    updateMs,
+    totalMs: Date.now() - startedAt,
+  });
+}
+
+async function getTopCountsByPrefix(
+  env: CloudflareEnv,
+  prefix: string,
+  perf: PerfLogContext,
+  label: string,
+): Promise<Array<[string, number]>> {
+  const startedAt = Date.now();
+  const values: Array<[string, number]> = [];
+  let cursor: string | undefined;
+  let complete = false;
+  let pages = 0;
+
+  while (!complete) {
+    pages++;
+    const page = await env.FAVICON_STATS.list({ prefix, cursor });
+    cursor = page.cursor;
+    complete = page.list_complete;
+    for (const entry of page.keys) {
+      const count = Number(entry.metadata?.count ?? 0);
+      if (!Number.isFinite(count) || count <= 0) continue;
+      values.push([entry.name.replace(prefix, ""), count]);
+    }
+  }
+
+  values.sort((a, b) => b[1] - a[1]);
+  const top = values.slice(0, 12);
+  logPerf(perf.enabled, {
+    stage: "source_summary",
+    requestId: perf.requestId ?? null,
+    label,
+    pages,
+    totalRows: values.length,
+    totalMs: Date.now() - startedAt,
+  });
+  return top;
+}
+
+export async function getTopRequestSources(env: CloudflareEnv, perf: PerfLogContext = {}) {
+  const [topCountries, topReferrers] = await Promise.all([
+    getTopCountsByPrefix(env, COUNTRY_KEY_PREFIX, perf, "countries"),
+    getTopCountsByPrefix(env, REFERRER_KEY_PREFIX, perf, "referrers"),
+  ]);
+  return { topCountries, topReferrers };
 }
 
 export async function getEmojiCounts(env: CloudflareEnv, perf: PerfLogContext = {}) {
@@ -81,7 +163,7 @@ export async function getEmojiCounts(env: CloudflareEnv, perf: PerfLogContext = 
   while (!complete) {
     pageNumber++;
     const listStartedAt = Date.now();
-    const page = await env.FAVICON_STATS.list({ prefix: KEY_PREFIX, cursor });
+    const page = await env.FAVICON_STATS.list({ prefix: EMOJI_KEY_PREFIX, cursor });
     const listMs = Date.now() - listStartedAt;
     cursor = page.cursor;
     complete = page.list_complete;
@@ -92,7 +174,7 @@ export async function getEmojiCounts(env: CloudflareEnv, perf: PerfLogContext = 
       const count = Number(entry.metadata?.count ?? 0);
       if (!Number.isFinite(count) || count <= 0) continue;
       metadataHits++;
-      const emoji = entry.name.replace(KEY_PREFIX, "");
+      const emoji = entry.name.replace(EMOJI_KEY_PREFIX, "");
       emojis.push([emoji, count]);
     }
 

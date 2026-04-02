@@ -3,7 +3,12 @@ import emojiFromText from "emoji-from-text";
 import { UAParser } from "ua-parser-js";
 
 import { makeHomePage } from "./homePage";
-import { incrementCount, type CloudflareEnv, type PerfLogContext } from "./db";
+import {
+  incrementCount,
+  incrementSourceCounts,
+  type CloudflareEnv,
+  type PerfLogContext,
+} from "./db";
 
 const ONE_DAY = 60 * 60 * 24;
 const ONE_WEEK = ONE_DAY * 7;
@@ -11,6 +16,15 @@ const TWEMOJI_BASE_URL = "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/ass
 
 interface WorkerExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
+}
+
+interface RequestCfDetails {
+  country?: string;
+  colo?: string;
+}
+
+interface RequestWithCf extends Request {
+  cf?: RequestCfDetails;
 }
 
 function logPerf(enabled: boolean, payload: Record<string, unknown>) {
@@ -22,6 +36,48 @@ function logPerf(enabled: boolean, payload: Record<string, unknown>) {
       ...payload,
     }),
   );
+}
+
+function getReferrerHost(request: Request): string {
+  const referrer = request.headers.get("referer") ?? request.headers.get("referrer");
+  if (!referrer) return "direct";
+  try {
+    return new URL(referrer).hostname || "direct";
+  } catch {
+    return "invalid_referrer";
+  }
+}
+
+function writeFaviconAnalytics(params: {
+  env: CloudflareEnv;
+  request: Request;
+  path: string;
+  emoji: string;
+  responseType: "svg" | "png" | "svg_fallback";
+  status: number;
+  durationMs: number;
+}) {
+  const dataset = params.env.ANALYTICS;
+  if (!dataset) return;
+  const cf = (params.request as RequestWithCf).cf;
+  const host = params.request.headers.get("host") ?? "unknown";
+  const country = cf?.country ?? "unknown";
+  const colo = cf?.colo ?? "unknown";
+  const referrerHost = getReferrerHost(params.request);
+  dataset.writeDataPoint({
+    blobs: [
+      params.path,
+      params.emoji,
+      params.responseType,
+      String(params.status),
+      host,
+      country,
+      colo,
+      referrerHost,
+    ],
+    doubles: [1, params.durationMs],
+    indexes: [params.path, host, country, referrerHost],
+  });
 }
 
 const aliases = new Map<string, string>([
@@ -164,11 +220,20 @@ export default {
     }
 
     const emoji = getEmojiFromPathname(url.pathname);
-    ctx.waitUntil(incrementCount(env, emoji, perf));
+    const country = ((request as RequestWithCf).cf?.country ?? "unknown").toUpperCase();
+    const referrerHost = getReferrerHost(request);
+    ctx.waitUntil(
+      Promise.all([
+        incrementCount(env, emoji, perf),
+        incrementSourceCounts(env, country, referrerHost, perf),
+      ]),
+    );
     logPerf(perfEnabled, {
       stage: "increment_scheduled",
       requestId: perf.requestId ?? null,
       emoji,
+      country,
+      referrerHost,
     });
 
     // ?svg tacked on the end forces SVG, handy for CSS cursors.
@@ -177,6 +242,16 @@ export default {
       const png = await makePngResponse(emoji, perf);
       if (png) {
         response = png;
+        const totalMs = Date.now() - requestStartedAt;
+        writeFaviconAnalytics({
+          env,
+          request,
+          path: url.pathname,
+          emoji,
+          responseType: "png",
+          status: response.status,
+          durationMs: totalMs,
+        });
         logPerf(perfEnabled, {
           stage: "request_summary",
           requestId: perf.requestId ?? null,
@@ -189,6 +264,16 @@ export default {
       }
       // Fallback to SVG if PNG fetch fails.
       response = makeSvgResponse(emoji);
+      const totalMs = Date.now() - requestStartedAt;
+      writeFaviconAnalytics({
+        env,
+        request,
+        path: url.pathname,
+        emoji,
+        responseType: "svg_fallback",
+        status: response.status,
+        durationMs: totalMs,
+      });
       logPerf(perfEnabled, {
         stage: "request_summary",
         requestId: perf.requestId ?? null,
@@ -201,6 +286,16 @@ export default {
     }
 
     response = makeSvgResponse(emoji);
+    const totalMs = Date.now() - requestStartedAt;
+    writeFaviconAnalytics({
+      env,
+      request,
+      path: url.pathname,
+      emoji,
+      responseType: "svg",
+      status: response.status,
+      durationMs: totalMs,
+    });
     logPerf(perfEnabled, {
       stage: "request_summary",
       requestId: perf.requestId ?? null,

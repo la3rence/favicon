@@ -1,9 +1,15 @@
-import { getEmojiCounts, type CloudflareEnv, type PerfLogContext } from "./db";
+import {
+  getEmojiCounts,
+  getTopRequestSources,
+  type CloudflareEnv,
+  type PerfLogContext,
+} from "./db";
 
 const goodAssEmojis = ["💩", "🌶", "🔥", "🥰", "🖥", "👓"];
 const formatter = new Intl.NumberFormat("en-US");
 export async function makeHomePage(env: CloudflareEnv, perf: PerfLogContext = {}) {
   const { topEmojis, countryEmojis, totalCount } = await getEmojiCounts(env, perf);
+  const { topCountries, topReferrers } = await getTopRequestSources(env, perf);
   return /*html*/ `
         <!DOCTYPE html>
         <html lang="en">
@@ -60,6 +66,32 @@ export async function makeHomePage(env: CloudflareEnv, perf: PerfLogContext = {}
             )
             .join("")}
           </div>
+          <br>
+          <p>Where favicon requests are coming from</p>
+          <div class="source-columns">
+            <div class="source-column">
+              <h3>Top Countries</h3>
+              ${topCountries
+                .map(
+                  ([country, count]) => `<div class="source-row">
+                    <span>${country}</span>
+                    <strong>${formatter.format(count)}</strong>
+                  </div>`,
+                )
+                .join("")}
+            </div>
+            <div class="source-column">
+              <h3>Top Referrers</h3>
+              ${topReferrers
+                .map(
+                  ([referrer, count]) => `<div class="source-row">
+                    <span>${referrer}</span>
+                    <strong>${formatter.format(count)}</strong>
+                  </div>`,
+                )
+                .join("")}
+            </div>
+          </div>
 
 
           <p><small>Made with 🖤 by <a href="https://x.com/wesbos">@wesbos</a>
@@ -115,7 +147,32 @@ export async function makeHomePage(env: CloudflareEnv, perf: PerfLogContext = {}
               padding: 4px 4px;
               line-height: 1;
               border-radius: 10px;
-
+            }
+            .source-columns {
+              display: grid;
+              grid-template-columns: repeat(2, minmax(240px, 1fr));
+              gap: 20px;
+              max-width: 900px;
+              margin: 20px auto;
+              text-align: left;
+            }
+            .source-column h3 {
+              margin-bottom: 8px;
+            }
+            .source-row {
+              display: flex;
+              justify-content: space-between;
+              gap: 8px;
+              padding: 6px 8px;
+              margin-bottom: 4px;
+              background: #f7f7f7;
+              border-radius: 8px;
+              font-size: 14px;
+            }
+            .source-row span {
+              overflow: hidden;
+              text-overflow: ellipsis;
+              white-space: nowrap;
             }
           </style>
           <script>
