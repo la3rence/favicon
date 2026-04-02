@@ -64,20 +64,32 @@ function writeFaviconAnalytics(params: {
   const country = cf?.country ?? "unknown";
   const colo = cf?.colo ?? "unknown";
   const referrerHost = getReferrerHost(params.request);
-  dataset.writeDataPoint({
-    blobs: [
-      params.path,
-      params.emoji,
-      params.responseType,
-      String(params.status),
-      host,
-      country,
-      colo,
-      referrerHost,
-    ],
-    doubles: [1, params.durationMs],
-    indexes: [params.path, host, country, referrerHost],
-  });
+  try {
+    dataset.writeDataPoint({
+      blobs: [
+        params.path,
+        params.emoji,
+        params.responseType,
+        String(params.status),
+        host,
+        country,
+        colo,
+        referrerHost,
+      ],
+      doubles: [1, params.durationMs],
+      // Analytics Engine currently supports a single index per datapoint.
+      indexes: [params.path],
+    });
+  } catch (error) {
+    // Never fail favicon responses because analytics write failed.
+    console.warn(
+      JSON.stringify({
+        type: "analytics_error",
+        path: params.path,
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
 }
 
 const aliases = new Map<string, string>([
