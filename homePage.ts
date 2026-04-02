@@ -1,9 +1,9 @@
-import { getEmojiCounts } from './db.ts';
+import { getEmojiCounts, type CloudflareEnv } from "./db";
 
 const goodAssEmojis = ["💩", "🌶", "🔥", "🥰", "🖥", "👓"];
 const formatter = new Intl.NumberFormat("en-US");
-export async function makeHomePage() {
-  const { topEmojis, countryEmojis, totalCount } = await getEmojiCounts();
+export async function makeHomePage(env: CloudflareEnv) {
+  const { topEmojis, countryEmojis, totalCount } = await getEmojiCounts(env);
   return /*html*/ `
         <!DOCTYPE html>
         <html lang="en">
@@ -58,7 +58,7 @@ export async function makeHomePage() {
               source 👩‍💻
             </a>
             ×
-            Its TS + Deno
+            Its TS + Cloudflare Workers
             </small>
           </p>
           <style>

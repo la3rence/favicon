@@ -1,33 +1,34 @@
-import { createCanvas } from "https://deno.land/x/canvas@v1.4.2/mod.ts";
-import emojiRegex from 'npm:emoji-regex';
-import emojiFromText from 'npm:emoji-from-text';
-import { UAParser } from 'npm:ua-parser-js';
+import emojiRegex from "emoji-regex";
+import emojiFromText from "emoji-from-text";
+import { UAParser } from "ua-parser-js";
 
+import { makeHomePage } from "./homePage";
+import { incrementCount, type CloudflareEnv } from "./db";
 
-import { makeHomePage } from "./homePage.ts";
-import { incrementCount } from "./db.ts";
-const port = 8080;
-const font = await Deno.readFile("./NotoColorEmoji.ttf");
+const ONE_DAY = 60 * 60 * 24;
+const ONE_WEEK = ONE_DAY * 7;
+const TWEMOJI_BASE_URL =
+  "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72";
 
-export function makePng(emoji: string): Uint8Array {
-  const canvas = createCanvas(128, 128);
-  const ctx = canvas.getContext("2d");
-  canvas.loadFont(font, { family: "Noto Color Emoji" });
-  ctx.font = "105px Noto Color Emoji";
-  ctx.fillText(emoji, 0, 100);
-  const png = canvas.toBuffer("image/png");
-  return png;
+interface WorkerExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
 }
 
-const aliases = new Map([
+const aliases = new Map<string, string>([
   ["favicon.ico", "🚜"],
-  ["wesbos", "🔥"]
+  ["wesbos", "🔥"],
 ]);
 
 function getEmojiFromPathname(pathname: string): string {
-  const maybeEmojiPath = decodeURIComponent(pathname.replace("/", ""));
+  const maybeEmojiPath = (() => {
+    try {
+      return decodeURIComponent(pathname.replace("/", ""));
+    } catch {
+      return pathname.replace("/", "");
+    }
+  })();
   const alias = aliases.get(maybeEmojiPath);
-  if(alias) return alias;
+  if (alias) return alias;
   const emojis = maybeEmojiPath.match(emojiRegex());
   // If there are multiple emojis, just use the first one
   if (emojis?.length) {
@@ -35,56 +36,87 @@ function getEmojiFromPathname(pathname: string): string {
   }
   // If there is a word, try to find an emoji in it
   const textMatch = emojiFromText(maybeEmojiPath, true);
-  const maybeEmoji = textMatch?.match?.emoji?.char;
+  const maybeEmoji = (textMatch as { match?: { emoji?: { char?: string } } })?.match
+    ?.emoji?.char;
   if (maybeEmoji) {
     return maybeEmoji;
   }
   // If there are no emojis, return a tractor
   return "🚜";
 }
-export function handlerSafari(request: Request): Response {
-  const url = new URL(request.url);
-  const emoji = getEmojiFromPathname(url.pathname);
-  const png = makePng(emoji || "💩");
-  return new Response(png, {
-    status: 200,
-    headers: { "Content-Type": "image/png" },
-  });
+
+function isLegacySafari(userAgent: string): boolean {
+  const ua = UAParser(userAgent);
+  const version = Number.parseInt(ua.browser.version ?? "", 10);
+  return ua.browser.name === "Safari" && Number.isFinite(version) && version < 26;
 }
 
-export async function handler(request: Request): Response {
-  const url = new URL(request.url);
-  if (url.pathname === "/") {
-    return new Response(await makeHomePage(), {
+function toTwemojiCodePoint(emoji: string): string {
+  return Array.from(emoji)
+    .map((symbol) => symbol.codePointAt(0))
+    .filter((codePoint): codePoint is number => codePoint !== undefined && codePoint !== 0xfe0f)
+    .map((codePoint) => codePoint.toString(16))
+    .join("-");
+}
+
+function makeSvgResponse(emoji: string): Response {
+  return new Response(
+    `<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 16 16'><text x='0' y='14'>${emoji}</text></svg>`,
+    {
       status: 200,
       headers: {
-        "content-type": "text/html; charset=UTF-8",
-        "cache-control": `public, max-age=${60 * 60 * 24}, s-maxage=${60 * 60 * 24
-          }`,
+        "content-type": "image/svg+xml;",
+        "cache-control": `public, max-age=${ONE_DAY}, s-maxage=${ONE_WEEK}`,
       },
-    });
-  }
-  const emoji = getEmojiFromPathname(url.pathname);
-  // Emoji Telemetry
-  incrementCount(emoji);
-  // Safari doesn't support SVG fonts, so we need to make a PNG
-  const forceSvg = url.search.includes('svg'); // ?svg tacked on the end forces SVG, handy for css cursors
+    },
+  );
+}
 
-  const ua = UAParser(request.headers.get("user-agent") || "");
-  const version = parseInt(ua.browser.version);
+async function makePngResponse(emoji: string): Promise<Response | null> {
+  const codePoint = toTwemojiCodePoint(emoji);
+  if (!codePoint) return null;
 
-  // Safari < 26 doesn't support SVG fonts, so we need to make a PNG
-  if (!forceSvg && ua.browser.name === "Safari" && version < 26) {
-    return handlerSafari(request);
-  }
+  const twemojiResponse = await fetch(`${TWEMOJI_BASE_URL}/${codePoint}.png`);
+  if (!twemojiResponse.ok) return null;
 
-  return new Response(`<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 16 16'><text x='0' y='14'>${emoji}</text></svg>`, {
+  return new Response(twemojiResponse.body, {
     status: 200,
     headers: {
-      "content-type": `image/svg+xml;`,
-      "cache-control": `public, max-age=${60 * 60 * 24}, s-maxage=${60 * 60 * 24 * 7
-        }`,
-    }
+      "content-type": "image/png",
+      "cache-control": `public, max-age=${ONE_DAY}, s-maxage=${ONE_WEEK}`,
+    },
   });
 }
-Deno.serve({ port }, handler);
+
+export default {
+  async fetch(
+    request: Request,
+    env: CloudflareEnv,
+    ctx: WorkerExecutionContext,
+  ): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === "/") {
+      return new Response(await makeHomePage(env), {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=UTF-8",
+          "cache-control": `public, max-age=${ONE_DAY}, s-maxage=${ONE_DAY}`,
+        },
+      });
+    }
+
+    const emoji = getEmojiFromPathname(url.pathname);
+    ctx.waitUntil(incrementCount(env, emoji));
+
+    // ?svg tacked on the end forces SVG, handy for CSS cursors.
+    const forceSvg = url.searchParams.has("svg");
+    if (!forceSvg && isLegacySafari(request.headers.get("user-agent") ?? "")) {
+      const png = await makePngResponse(emoji);
+      if (png) return png;
+      // Fallback to SVG if PNG fetch fails.
+      return makeSvgResponse(emoji);
+    }
+
+    return makeSvgResponse(emoji);
+  }
+};
