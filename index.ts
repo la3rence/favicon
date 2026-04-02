@@ -21,6 +21,9 @@ interface WorkerExecutionContext {
 interface RequestCfDetails {
   country?: string;
   colo?: string;
+  regionCode?: string;
+  latitude?: number | string;
+  longitude?: number | string;
 }
 
 interface RequestWithCf extends Request {
@@ -48,6 +51,29 @@ function getReferrerHost(request: Request): string {
   }
 }
 
+const GEO_BUCKET_DECIMALS = 1;
+
+function toRoundedCoordinate(value: number | string | undefined): number | null {
+  if (value === undefined) return null;
+  const parsed = typeof value === "number" ? value : Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) return null;
+  return Number(parsed.toFixed(GEO_BUCKET_DECIMALS));
+}
+
+function geoBucketFromCoordinates(lat: number | null, lon: number | null): string {
+  if (lat === null || lon === null) return "unknown";
+  return `${lat.toFixed(GEO_BUCKET_DECIMALS)},${lon.toFixed(GEO_BUCKET_DECIMALS)}`;
+}
+
+function hashString(input: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
 function writeFaviconAnalytics(params: {
   env: CloudflareEnv;
   request: Request;
@@ -63,6 +89,11 @@ function writeFaviconAnalytics(params: {
   const host = params.request.headers.get("host") ?? "unknown";
   const country = cf?.country ?? "unknown";
   const colo = cf?.colo ?? "unknown";
+  const regionCode = cf?.regionCode ?? "unknown";
+  const roundedLat = toRoundedCoordinate(cf?.latitude);
+  const roundedLon = toRoundedCoordinate(cf?.longitude);
+  const geoBucket = geoBucketFromCoordinates(roundedLat, roundedLon);
+  const geoBucketHash = hashString(geoBucket);
   const referrerHost = getReferrerHost(params.request);
   try {
     dataset.writeDataPoint({
@@ -73,8 +104,11 @@ function writeFaviconAnalytics(params: {
         String(params.status),
         host,
         country,
+        regionCode,
         colo,
         referrerHost,
+        geoBucket,
+        geoBucketHash,
       ],
       doubles: [1, params.durationMs],
       // Analytics Engine currently supports a single index per datapoint.
@@ -234,10 +268,14 @@ export default {
     const emoji = getEmojiFromPathname(url.pathname);
     const country = ((request as RequestWithCf).cf?.country ?? "unknown").toUpperCase();
     const referrerHost = getReferrerHost(request);
+    const cf = (request as RequestWithCf).cf;
+    const roundedLat = toRoundedCoordinate(cf?.latitude);
+    const roundedLon = toRoundedCoordinate(cf?.longitude);
+    const geoBucket = geoBucketFromCoordinates(roundedLat, roundedLon);
     ctx.waitUntil(
       Promise.all([
         incrementCount(env, emoji, perf),
-        incrementSourceCounts(env, country, referrerHost, perf),
+        incrementSourceCounts(env, country, referrerHost, geoBucket, perf),
       ]),
     );
     logPerf(perfEnabled, {
@@ -246,6 +284,7 @@ export default {
       emoji,
       country,
       referrerHost,
+      geoBucket,
     });
 
     // ?svg tacked on the end forces SVG, handy for CSS cursors.

@@ -1,6 +1,7 @@
 const EMOJI_KEY_PREFIX = "favicon:";
 const COUNTRY_KEY_PREFIX = "country:";
 const REFERRER_KEY_PREFIX = "referrer:";
+const GEO_KEY_PREFIX = "geo:";
 
 interface StatMetadata {
   count?: number;
@@ -87,13 +88,19 @@ export async function incrementSourceCounts(
   env: CloudflareEnv,
   country: string,
   referrerHost: string,
+  geoBucket: string,
   perf: PerfLogContext = {},
 ): Promise<void> {
   const startedAt = Date.now();
   const countryKey = getKey(COUNTRY_KEY_PREFIX, country);
   const referrerKey = getKey(REFERRER_KEY_PREFIX, referrerHost);
+  const geoKey = getKey(GEO_KEY_PREFIX, geoBucket);
   const updateStartedAt = Date.now();
-  await Promise.all([incrementCounter(env, countryKey), incrementCounter(env, referrerKey)]);
+  await Promise.all([
+    incrementCounter(env, countryKey),
+    incrementCounter(env, referrerKey),
+    incrementCounter(env, geoKey),
+  ]);
   const updateMs = Date.now() - updateStartedAt;
 
   logPerf(perf.enabled, {
@@ -101,6 +108,7 @@ export async function incrementSourceCounts(
     requestId: perf.requestId ?? null,
     countryKey,
     referrerKey,
+    geoKey,
     updateMs,
     totalMs: Date.now() - startedAt,
   });
@@ -144,11 +152,12 @@ async function getTopCountsByPrefix(
 }
 
 export async function getTopRequestSources(env: CloudflareEnv, perf: PerfLogContext = {}) {
-  const [topCountries, topReferrers] = await Promise.all([
+  const [topCountries, topReferrers, topGeoBuckets] = await Promise.all([
     getTopCountsByPrefix(env, COUNTRY_KEY_PREFIX, perf, "countries"),
     getTopCountsByPrefix(env, REFERRER_KEY_PREFIX, perf, "referrers"),
+    getTopCountsByPrefix(env, GEO_KEY_PREFIX, perf, "geo_buckets"),
   ]);
-  return { topCountries, topReferrers };
+  return { topCountries, topReferrers, topGeoBuckets };
 }
 
 export async function getEmojiCounts(env: CloudflareEnv, perf: PerfLogContext = {}) {
