@@ -25,7 +25,9 @@ Also works with CSS:
 
 ```css
 a {
-  cursor: url("https://fav.farm/🖕") 15 0, auto;
+  cursor:
+    url("https://fav.farm/🖕") 15 0,
+    auto;
 }
 ```
 
@@ -50,7 +52,7 @@ favicon:<emoji>
 
 `incrementCount` currently uses KV read/modify/write (simple mode), so extremely high concurrency can lose increments.
 
-## Deno KV export migration script
+## Deno KV export migration script [delete after migration]
 
 To export historical stats from local Deno KV:
 
