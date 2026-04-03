@@ -8,80 +8,9 @@ import {
 const goodAssEmojis = ["💩", "🌶", "🔥", "🥰", "🖥", "👓"];
 const formatter = new Intl.NumberFormat("en-US");
 
-type EmojiCount = [string, number];
-type DisplayStat = { emojiLabel: string; countLabel: string; href?: string };
-
-function toThousandBucketLabel(count: number): string {
-  const roundedThousands = Math.max(1, Math.round(count / 1000));
-  return `${roundedThousands}k`;
-}
-
-function toHundredsBucketLabel(count: number): string {
-  const roundedHundreds = Math.round(count / 100) * 100;
-  return formatter.format(roundedHundreds);
-}
-
-function buildTopEmojiDisplay(topEmojis: EmojiCount[]): DisplayStat[] {
-  const topTwenty = topEmojis.slice(0, 20).map(([emoji, count]) => ({
-    emojiLabel: emoji,
-    countLabel: formatter.format(count),
-    href: `/${emoji}`,
-  }));
-
-  const bucketGroups = new Map<string, { emojis: string[]; countLabel: string }>();
-  const tailTokens: Array<{ kind: "exact"; item: DisplayStat } | { kind: "bucket"; key: string }> =
-    [];
-
-  for (const [emoji, count] of topEmojis.slice(20)) {
-    if (count < 100) {
-      tailTokens.push({
-        kind: "exact",
-        item: {
-          emojiLabel: emoji,
-          countLabel: formatter.format(count),
-          href: `/${emoji}`,
-        },
-      });
-      continue;
-    }
-
-    const bucketType = count >= 1000 ? "k" : "h";
-    const countLabel =
-      bucketType === "k" ? toThousandBucketLabel(count) : toHundredsBucketLabel(count);
-    const bucketKey = `${bucketType}:${countLabel}`;
-    const existing = bucketGroups.get(bucketKey);
-
-    if (existing) {
-      existing.emojis.push(emoji);
-      continue;
-    }
-
-    bucketGroups.set(bucketKey, {
-      emojis: [emoji],
-      countLabel,
-    });
-    tailTokens.push({ kind: "bucket", key: bucketKey });
-  }
-
-  const tailDisplay = tailTokens.map((token) => {
-    if (token.kind === "exact") return token.item;
-    const bucket = bucketGroups.get(token.key);
-    if (!bucket) {
-      return { emojiLabel: "", countLabel: "" };
-    }
-    return {
-      emojiLabel: bucket.emojis.join(""),
-      countLabel: bucket.countLabel,
-    };
-  });
-
-  return [...topTwenty, ...tailDisplay].filter((item) => item.emojiLabel);
-}
-
 export async function makeHomePage(env: CloudflareEnv, perf: PerfLogContext = {}) {
   const { topEmojis, countryEmojis, totalCount } = await getEmojiCounts(env, perf);
   const { topCountries, topReferrers, topGeoBuckets } = await getTopRequestSources(env, perf);
-  const displayTopEmojis = buildTopEmojiDisplay(topEmojis);
   return /*html*/ `
         <!DOCTYPE html>
         <html lang="en">
@@ -119,14 +48,14 @@ export async function makeHomePage(env: CloudflareEnv, perf: PerfLogContext = {}
           <small>(since I started counting Oct 3, 2024)</small>
         </p>
           <div class="stats">
-          ${displayTopEmojis
+          ${topEmojis
             .map(
-              (item) =>
-                `<div class="stat">${
-                  item.href
-                    ? `<a href="${item.href}"><span>${item.emojiLabel} ${item.countLabel}</span></a>`
-                    : `<span>${item.emojiLabel} ${item.countLabel}</span>`
-                }</div>`,
+              ([emoji, count]) => `<div class="stat">
+              <a href="/${emoji}">
+                <span class="emoji">${emoji}</span>
+                <span class="count">${formatter.format(count)}</span>
+              </a>
+            </div>`,
             )
             .join("")}
           </div>
@@ -136,7 +65,10 @@ export async function makeHomePage(env: CloudflareEnv, perf: PerfLogContext = {}
           ${countryEmojis
             .map(
               ([emoji, count]) => `<div class="stat">
-              <a href="/${emoji}"><span>${emoji} ${formatter.format(count)}</span></a>
+              <a href="/${emoji}">
+                <span class="emoji">${emoji}</span>
+                <span class="count">${formatter.format(count)}</span>
+              </a>
             </div>`,
             )
             .join("")}
@@ -221,11 +153,12 @@ export async function makeHomePage(env: CloudflareEnv, perf: PerfLogContext = {}
               font-size: 13px;
             }
             .stats {
-              display: flex;
+              display: grid;
+              grid-template-columns: repeat(auto-fill, minmax(50px, 1fr));
               justify-content: center;
               flex-wrap: wrap;
               gap: 5px;
-              max-width: 800px;
+              max-width: 1200px;
               margin: 20px auto;
             }
             .stat {
@@ -233,6 +166,17 @@ export async function makeHomePage(env: CloudflareEnv, perf: PerfLogContext = {}
               padding: 4px 4px;
               line-height: 1;
               border-radius: 10px;
+              a {
+                text-decoration: none;
+              }
+              .emoji {
+                font-size: 35px;
+                display: block;
+              }
+              .count {
+                font-size: 12px;
+                color: #666;
+              }
             }
             .source-columns {
               display: grid;
