@@ -1,0 +1,35 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "favicon",
+  "main": "index.ts",
+  "workers_dev": true,
+  "preview_urls": true,
+  "compatibility_date": "2026-03-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "kv_namespaces": [
+    {
+      "binding": "FAVICON_STATS",
+      "id": "0e966c508a3e4aa3b9f4779fbf4f1936",
+      "preview_id": "6847ca0b4f164033ae452c3896db584f",
+      "remote": true,
+    },
+  ],
+  "analytics_engine_datasets": [
+    {
+      "binding": "ANALYTICS",
+      "dataset": "favicon_requests",
+    },
+  ],
+  "routes": [
+    {
+      "pattern": "fav.farm",
+      "custom_domain": true,
+    },
+  ],
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true,
+    },
+  },
+}

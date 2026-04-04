@@ -1,33 +1,146 @@
-import { createCanvas } from "https://deno.land/x/canvas@v1.4.2/mod.ts";
-import emojiRegex from 'npm:emoji-regex';
-import emojiFromText from 'npm:emoji-from-text';
-import { UAParser } from 'npm:ua-parser-js';
+import emojiRegex from "emoji-regex";
+import emojiFromText from "emoji-from-text";
+import { UAParser } from "ua-parser-js";
 
+import { makeHomePage } from "./homePage";
+import {
+  incrementCount,
+  incrementSourceCounts,
+  type CloudflareEnv,
+  type PerfLogContext,
+} from "./db";
 
-import { makeHomePage } from "./homePage.ts";
-import { incrementCount } from "./db.ts";
-const port = 8080;
-const font = await Deno.readFile("./NotoColorEmoji.ttf");
+const ONE_DAY = 60 * 60 * 24;
+const ONE_WEEK = ONE_DAY * 7;
+const TWEMOJI_BASE_URL = "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72";
 
-export function makePng(emoji: string): Uint8Array {
-  const canvas = createCanvas(128, 128);
-  const ctx = canvas.getContext("2d");
-  canvas.loadFont(font, { family: "Noto Color Emoji" });
-  ctx.font = "105px Noto Color Emoji";
-  ctx.fillText(emoji, 0, 100);
-  const png = canvas.toBuffer("image/png");
-  return png;
+interface WorkerExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
 }
 
-const aliases = new Map([
+interface RequestCfDetails {
+  country?: string;
+  colo?: string;
+  regionCode?: string;
+  latitude?: number | string;
+  longitude?: number | string;
+}
+
+interface RequestWithCf extends Request {
+  cf?: RequestCfDetails;
+}
+
+function logPerf(enabled: boolean, payload: Record<string, unknown>) {
+  if (!enabled) return;
+  console.log(
+    JSON.stringify({
+      type: "perf",
+      scope: "request",
+      ...payload,
+    }),
+  );
+}
+
+function getReferrerHost(request: Request): string {
+  const referrer = request.headers.get("referer") ?? request.headers.get("referrer");
+  if (!referrer) return "direct";
+  try {
+    return new URL(referrer).hostname || "direct";
+  } catch {
+    return "invalid_referrer";
+  }
+}
+
+const GEO_BUCKET_DECIMALS = 1;
+
+function toRoundedCoordinate(value: number | string | undefined): number | null {
+  if (value === undefined) return null;
+  const parsed = typeof value === "number" ? value : Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) return null;
+  return Number(parsed.toFixed(GEO_BUCKET_DECIMALS));
+}
+
+function geoBucketFromCoordinates(lat: number | null, lon: number | null): string {
+  if (lat === null || lon === null) return "unknown";
+  return `${lat.toFixed(GEO_BUCKET_DECIMALS)},${lon.toFixed(GEO_BUCKET_DECIMALS)}`;
+}
+
+function hashString(input: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function writeFaviconAnalytics(params: {
+  env: CloudflareEnv;
+  request: Request;
+  path: string;
+  emoji: string;
+  responseType: "svg" | "png" | "svg_fallback";
+  status: number;
+  durationMs: number;
+}) {
+  const dataset = params.env.ANALYTICS;
+  if (!dataset) return;
+  const cf = (params.request as RequestWithCf).cf;
+  const host = params.request.headers.get("host") ?? "unknown";
+  const country = cf?.country ?? "unknown";
+  const colo = cf?.colo ?? "unknown";
+  const regionCode = cf?.regionCode ?? "unknown";
+  const roundedLat = toRoundedCoordinate(cf?.latitude);
+  const roundedLon = toRoundedCoordinate(cf?.longitude);
+  const geoBucket = geoBucketFromCoordinates(roundedLat, roundedLon);
+  const geoBucketHash = hashString(geoBucket);
+  const referrerHost = getReferrerHost(params.request);
+  try {
+    dataset.writeDataPoint({
+      blobs: [
+        params.path,
+        params.emoji,
+        params.responseType,
+        String(params.status),
+        host,
+        country,
+        regionCode,
+        colo,
+        referrerHost,
+        geoBucket,
+        geoBucketHash,
+      ],
+      doubles: [1, params.durationMs],
+      // Analytics Engine currently supports a single index per datapoint.
+      indexes: [params.path],
+    });
+  } catch (error) {
+    // Never fail favicon responses because analytics write failed.
+    console.warn(
+      JSON.stringify({
+        type: "analytics_error",
+        path: params.path,
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+}
+
+const aliases = new Map<string, string>([
   ["favicon.ico", "🚜"],
-  ["wesbos", "🔥"]
+  ["wesbos", "🔥"],
 ]);
 
 function getEmojiFromPathname(pathname: string): string {
-  const maybeEmojiPath = decodeURIComponent(pathname.replace("/", ""));
+  const maybeEmojiPath = (() => {
+    try {
+      return decodeURIComponent(pathname.replace("/", ""));
+    } catch {
+      return pathname.replace("/", "");
+    }
+  })();
   const alias = aliases.get(maybeEmojiPath);
-  if(alias) return alias;
+  if (alias) return alias;
   const emojis = maybeEmojiPath.match(emojiRegex());
   // If there are multiple emojis, just use the first one
   if (emojis?.length) {
@@ -35,56 +148,213 @@ function getEmojiFromPathname(pathname: string): string {
   }
   // If there is a word, try to find an emoji in it
   const textMatch = emojiFromText(maybeEmojiPath, true);
-  const maybeEmoji = textMatch?.match?.emoji?.char;
+  const maybeEmoji = (textMatch as { match?: { emoji?: { char?: string } } })?.match?.emoji?.char;
   if (maybeEmoji) {
     return maybeEmoji;
   }
   // If there are no emojis, return a tractor
   return "🚜";
 }
-export function handlerSafari(request: Request): Response {
-  const url = new URL(request.url);
-  const emoji = getEmojiFromPathname(url.pathname);
-  const png = makePng(emoji || "💩");
-  return new Response(png, {
-    status: 200,
-    headers: { "Content-Type": "image/png" },
-  });
+
+function isLegacySafari(userAgent: string): boolean {
+  const ua = UAParser(userAgent);
+  const version = Number.parseInt(ua.browser.version ?? "", 10);
+  return ua.browser.name === "Safari" && Number.isFinite(version) && version < 26;
 }
 
-export async function handler(request: Request): Response {
-  const url = new URL(request.url);
-  if (url.pathname === "/") {
-    return new Response(await makeHomePage(), {
+function toTwemojiCodePoint(emoji: string): string {
+  return Array.from(emoji)
+    .map((symbol) => symbol.codePointAt(0))
+    .filter((codePoint): codePoint is number => codePoint !== undefined && codePoint !== 0xfe0f)
+    .map((codePoint) => codePoint.toString(16))
+    .join("-");
+}
+
+function makeSvgResponse(emoji: string): Response {
+  return new Response(
+    `<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 16 16'><text x='0' y='14'>${emoji}</text></svg>`,
+    {
       status: 200,
       headers: {
-        "content-type": "text/html; charset=UTF-8",
-        "cache-control": `public, max-age=${60 * 60 * 24}, s-maxage=${60 * 60 * 24
-          }`,
+        "content-type": "image/svg+xml;",
+        "cache-control": `public, max-age=${ONE_DAY}, s-maxage=${ONE_WEEK}`,
       },
-    });
-  }
-  const emoji = getEmojiFromPathname(url.pathname);
-  // Emoji Telemetry
-  incrementCount(emoji);
-  // Safari doesn't support SVG fonts, so we need to make a PNG
-  const forceSvg = url.search.includes('svg'); // ?svg tacked on the end forces SVG, handy for css cursors
+    },
+  );
+}
 
-  const ua = UAParser(request.headers.get("user-agent") || "");
-  const version = parseInt(ua.browser.version);
+async function makePngResponse(emoji: string, perf: PerfLogContext = {}): Promise<Response | null> {
+  const startedAt = Date.now();
+  const codePoint = toTwemojiCodePoint(emoji);
+  if (!codePoint) return null;
 
-  // Safari < 26 doesn't support SVG fonts, so we need to make a PNG
-  if (!forceSvg && ua.browser.name === "Safari" && version < 26) {
-    return handlerSafari(request);
-  }
+  const fetchStartedAt = Date.now();
+  const twemojiResponse = await fetch(`${TWEMOJI_BASE_URL}/${codePoint}.png`);
+  const fetchMs = Date.now() - fetchStartedAt;
+  logPerf(Boolean(perf.enabled), {
+    stage: "twemoji_fetch",
+    requestId: perf.requestId ?? null,
+    codePoint,
+    status: twemojiResponse.status,
+    fetchMs,
+  });
+  if (!twemojiResponse.ok) return null;
 
-  return new Response(`<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 16 16'><text x='0' y='14'>${emoji}</text></svg>`, {
+  const response = new Response(twemojiResponse.body, {
     status: 200,
     headers: {
-      "content-type": `image/svg+xml;`,
-      "cache-control": `public, max-age=${60 * 60 * 24}, s-maxage=${60 * 60 * 24 * 7
-        }`,
-    }
+      "content-type": "image/png",
+      "cache-control": `public, max-age=${ONE_DAY}, s-maxage=${ONE_WEEK}`,
+    },
   });
+
+  logPerf(Boolean(perf.enabled), {
+    stage: "png_response_ready",
+    requestId: perf.requestId ?? null,
+    totalMs: Date.now() - startedAt,
+  });
+  return response;
 }
-Deno.serve({ port }, handler);
+
+export default {
+  async fetch(
+    request: Request,
+    env: CloudflareEnv,
+    ctx: WorkerExecutionContext,
+  ): Promise<Response> {
+    const url = new URL(request.url);
+    const perfEnabled = url.searchParams.get("perf") === "1" || env.DEBUG_PERF === "1";
+    const perf: PerfLogContext = {
+      enabled: perfEnabled,
+      requestId: request.headers.get("cf-ray") ?? undefined,
+    };
+    const requestStartedAt = Date.now();
+    let response: Response;
+
+    logPerf(perfEnabled, {
+      stage: "request_start",
+      requestId: perf.requestId ?? null,
+      path: url.pathname,
+      method: request.method,
+      userAgent: request.headers.get("user-agent") ?? null,
+    });
+
+    if (url.pathname === "/") {
+      const homeStartedAt = Date.now();
+      const html = await makeHomePage(env, perf);
+      logPerf(perfEnabled, {
+        stage: "home_render",
+        requestId: perf.requestId ?? null,
+        renderMs: Date.now() - homeStartedAt,
+      });
+
+      response = new Response(html, {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=UTF-8",
+          "cache-control": `public, max-age=${ONE_DAY}, s-maxage=${ONE_DAY}`,
+        },
+      });
+      logPerf(perfEnabled, {
+        stage: "request_summary",
+        requestId: perf.requestId ?? null,
+        path: url.pathname,
+        status: response.status,
+        totalMs: Date.now() - requestStartedAt,
+      });
+      return response;
+    }
+
+    const emoji = getEmojiFromPathname(url.pathname);
+    const country = ((request as RequestWithCf).cf?.country ?? "unknown").toUpperCase();
+    const referrerHost = getReferrerHost(request);
+    const cf = (request as RequestWithCf).cf;
+    const roundedLat = toRoundedCoordinate(cf?.latitude);
+    const roundedLon = toRoundedCoordinate(cf?.longitude);
+    const geoBucket = geoBucketFromCoordinates(roundedLat, roundedLon);
+    ctx.waitUntil(
+      Promise.all([
+        incrementCount(env, emoji, perf),
+        incrementSourceCounts(env, country, referrerHost, geoBucket, perf),
+      ]),
+    );
+    logPerf(perfEnabled, {
+      stage: "increment_scheduled",
+      requestId: perf.requestId ?? null,
+      emoji,
+      country,
+      referrerHost,
+      geoBucket,
+    });
+
+    // ?svg tacked on the end forces SVG, handy for CSS cursors.
+    const forceSvg = url.searchParams.has("svg");
+    if (!forceSvg && isLegacySafari(request.headers.get("user-agent") ?? "")) {
+      const png = await makePngResponse(emoji, perf);
+      if (png) {
+        response = png;
+        const totalMs = Date.now() - requestStartedAt;
+        writeFaviconAnalytics({
+          env,
+          request,
+          path: url.pathname,
+          emoji,
+          responseType: "png",
+          status: response.status,
+          durationMs: totalMs,
+        });
+        logPerf(perfEnabled, {
+          stage: "request_summary",
+          requestId: perf.requestId ?? null,
+          path: url.pathname,
+          responseType: "png",
+          status: response.status,
+          totalMs: Date.now() - requestStartedAt,
+        });
+        return response;
+      }
+      // Fallback to SVG if PNG fetch fails.
+      response = makeSvgResponse(emoji);
+      const totalMs = Date.now() - requestStartedAt;
+      writeFaviconAnalytics({
+        env,
+        request,
+        path: url.pathname,
+        emoji,
+        responseType: "svg_fallback",
+        status: response.status,
+        durationMs: totalMs,
+      });
+      logPerf(perfEnabled, {
+        stage: "request_summary",
+        requestId: perf.requestId ?? null,
+        path: url.pathname,
+        responseType: "svg_fallback",
+        status: response.status,
+        totalMs: Date.now() - requestStartedAt,
+      });
+      return response;
+    }
+
+    response = makeSvgResponse(emoji);
+    const totalMs = Date.now() - requestStartedAt;
+    writeFaviconAnalytics({
+      env,
+      request,
+      path: url.pathname,
+      emoji,
+      responseType: "svg",
+      status: response.status,
+      durationMs: totalMs,
+    });
+    logPerf(perfEnabled, {
+      stage: "request_summary",
+      requestId: perf.requestId ?? null,
+      path: url.pathname,
+      responseType: "svg",
+      status: response.status,
+      totalMs: Date.now() - requestStartedAt,
+    });
+    return response;
+  },
+};

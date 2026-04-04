@@ -1,0 +1,51 @@
+{
+  "name": "favicon",
+  "version": "0.0.1",
+  "private": true,
+  "description": "A little website that serves up Favicon emojis.",
+  "keywords": [],
+  "homepage": "https://github.com/wesbos/favicon#readme",
+  "bugs": {
+    "url": "https://github.com/wesbos/favicon/issues"
+  },
+  "license": "MIT",
+  "author": "Wes Bos (https://wesbos.com/)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wesbos/favicon.git"
+  },
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "dev": "vp dev",
+    "build": "vp build",
+    "preview": "vp preview",
+    "cf:typegen": "wrangler types --env-interface CloudflareEnv",
+    "migrate:export-deno-kv": "deno run --allow-read --allow-write --allow-env --allow-net --unstable-kv scripts/export-deno-kv.ts",
+    "prepare": "vp config"
+  },
+  "dependencies": {
+    "emoji-from-text": "^1.1.14",
+    "emoji-regex": "^10.6.0",
+    "ua-parser-js": "^2.0.9"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.30.3",
+    "typescript": "^6.0.2",
+    "vite": "npm:@voidzero-dev/vite-plus-core@latest",
+    "vite-plus": "latest",
+    "wrangler": "^4.79.0"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp",
+      "workerd"
+    ],
+    "overrides": {
+      "vite": "npm:@voidzero-dev/vite-plus-core@latest",
+      "vitest": "npm:@voidzero-dev/vite-plus-test@latest"
+    }
+  }
+}
